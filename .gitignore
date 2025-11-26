@@ -17,3 +17,8 @@ yarn-error.log*
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Data files
+*.csv
+*.xlsx
+*.xls
