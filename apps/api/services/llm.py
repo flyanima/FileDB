@@ -10,24 +10,54 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.0-flash-001")
 
+from database import get_supabase
+
 class LLMService:
     def __init__(self):
-        if not OPENROUTER_API_KEY:
-            raise ValueError("OPENROUTER_API_KEY not found in environment variables")
+        self.api_key = None
+        self.base_url = None
+        self.model = None
         
-        print(f"[LLM] Initializing with model: {OPENROUTER_MODEL}")
-        print(f"[LLM] Base URL: {OPENROUTER_BASE_URL}")
+        # 1. Try to get active provider from DB
+        try:
+            supabase = get_supabase()
+            response = supabase.table("llm_providers").select("*").eq("is_active", True).single().execute()
+            if response.data:
+                provider = response.data
+                self.api_key = provider.get("api_key")
+                self.base_url = provider.get("base_url")
+                self.model = provider.get("selected_model")
+                print(f"[LLM] Loaded active provider from DB: {provider.get('name')}")
+        except Exception as e:
+            print(f"[LLM] Warning: Could not fetch provider from DB: {e}")
+
+        # 2. Fallback to environment variables
+        if not self.api_key:
+            print("[LLM] Fallback to environment variables")
+            self.api_key = os.environ.get("OPENROUTER_API_KEY")
+            self.base_url = os.environ.get("OPENROUTER_BASE_URL")
+            self.model = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.0-flash-001")
+
+        if not self.api_key:
+            raise ValueError("No active LLM provider found in DB and OPENROUTER_API_KEY not set in env")
+        
+        # Ensure model is set
+        if not self.model:
+            self.model = "google/gemini-2.0-flash-001" # Default fallback
+            
+        print(f"[LLM] Initializing with model: {self.model}")
+        print(f"[LLM] Base URL: {self.base_url}")
         
         self.client = OpenAI(
-            base_url=OPENROUTER_BASE_URL,
-            api_key=OPENROUTER_API_KEY,
+            base_url=self.base_url,
+            api_key=self.api_key,
         )
 
     def generate_text(self, prompt: str, system_prompt: str = "You are a helpful financial assistant.") -> str:
         try:
             print(f"[LLM] Generating text (prompt length: {len(prompt)})")
             response = self.client.chat.completions.create(
-                model=OPENROUTER_MODEL,
+                model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
@@ -70,7 +100,7 @@ class LLMService:
             
             # Send to LLM with base64 data URL
             llm_response = self.client.chat.completions.create(
-                model=OPENROUTER_MODEL,
+                model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {

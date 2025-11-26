@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import get_supabase
 from services.storage import StorageService
 from services.parser import ParserService
+from routers import llm_settings
 from pydantic import BaseModel
 from typing import Optional
 import uuid
@@ -17,6 +18,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include routers
+app.include_router(llm_settings.router)
+
 
 class ApprovalRequest(BaseModel):
     extraction_id: str

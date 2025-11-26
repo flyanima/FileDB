@@ -11,9 +11,10 @@ import {
 } from "@/components/ui/table"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
-import { Loader2, Save, Plus, Trash2 } from "lucide-react"
+import { Loader2, Save, Plus, Trash2, FileDown, FileUp, FileSpreadsheet } from "lucide-react"
 import { toast } from "sonner"
 import { supabase } from "@/lib/supabase"
+import { exportToExcel, exportToCSV, generateTemplate, parseExcelFile, validateRow, mapImportedData } from "@/lib/excel-utils"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -47,6 +48,12 @@ export function DataGrid({ tableName, columns, companyId, onRowClick }: DataGrid
   const [saving, setSaving] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [rowToDelete, setRowToDelete] = useState<any>(null)
+  
+  // Import/Export states
+  const [importDialogOpen, setImportDialogOpen] = useState(false)
+  const [importPreviewData, setImportPreviewData] = useState<any[]>([])
+  const [importing, setImporting] = useState(false)
+  const fileInputRef = React.useRef<HTMLInputElement>(null)
 
   const fetchData = async () => {
     if (!companyId) return
@@ -164,13 +171,126 @@ export function DataGrid({ tableName, columns, companyId, onRowClick }: DataGrid
     }
   }
 
+  // Export handlers
+  const handleExportExcel = () => {
+    exportToExcel(data, columns, tableName)
+    toast.success("已导出到 Excel")
+  }
+
+  const handleExportCSV = () => {
+    exportToCSV(data, columns, tableName)
+    toast.success("已导出到 CSV")
+  }
+
+  const handleDownloadTemplate = () => {
+    generateTemplate(columns, tableName)
+    toast.success("模板已下载")
+  }
+
+  // Import handlers
+  const handleImportClick = () => {
+    fileInputRef.current?.click()
+  }
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    try {
+      const parsedData = await parseExcelFile(file)
+      
+      // Validate and show preview
+      const validRows: any[] = []
+      const errors: string[] = []
+
+      parsedData.forEach((row, index) => {
+        const validation = validateRow(row, columns)
+        if (validation.valid) {
+          validRows.push(row)
+        } else {
+          errors.push(`Row ${index + 1}: ${validation.errors.join(', ')}`)
+        }
+      })
+
+      if (errors.length > 0) {
+        console.warn("Import validation errors:", errors)
+        toast.warning(`${errors.length} 行数据存在问题,将被跳过`)
+      }
+
+      setImportPreviewData(validRows)
+      setImportDialogOpen(true)
+    } catch (error) {
+      console.error("Error parsing file:", error)
+      toast.error("文件解析失败,请检查文件格式")
+    }
+
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  const handleConfirmImport = async () => {
+    if (!companyId) return
+    
+    setImporting(true)
+    try {
+      // Map imported data to database columns
+      const mappedData = mapImportedData(importPreviewData, columns)
+      
+      // Add company_id to each row
+      const dataToInsert = mappedData.map(row => ({
+        ...row,
+        company_id: companyId
+      }))
+
+      // Batch insert
+      const { error } = await supabase
+        .from(tableName)
+        .insert(dataToInsert)
+
+      if (error) throw error
+
+      toast.success(`成功导入 ${dataToInsert.length} 条数据`)
+      setImportDialogOpen(false)
+      setImportPreviewData([])
+      fetchData() // Refresh data
+    } catch (error) {
+      console.error("Error importing data:", error)
+      toast.error("导入失败,请重试")
+    } finally {
+      setImporting(false)
+    }
+  }
+
   if (loading) {
     return <div className="flex justify-center p-8"><Loader2 className="h-8 w-8 animate-spin" /></div>
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
+      <div className="flex justify-between items-center">
+        <div className="flex gap-2">
+          <Button onClick={handleExportExcel} size="sm" variant="outline">
+            <FileDown className="h-4 w-4 mr-2" /> 导出 Excel
+          </Button>
+          <Button onClick={handleExportCSV} size="sm" variant="outline">
+            <FileDown className="h-4 w-4 mr-2" /> 导出 CSV
+          </Button>
+          <Button onClick={handleDownloadTemplate} size="sm" variant="outline">
+            <FileSpreadsheet className="h-4 w-4 mr-2" /> 下载模板
+          </Button>
+          <Button onClick={handleImportClick} size="sm" variant="outline">
+            <FileUp className="h-4 w-4 mr-2" /> 导入数据
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,.xls,.csv"
+            onChange={handleFileChange}
+            className="hidden"
+          />
+        </div>
         <Button onClick={handleAddRow} size="sm">
           <Plus className="h-4 w-4 mr-2" /> 添加行
         </Button>
@@ -258,6 +378,62 @@ export function DataGrid({ tableName, columns, companyId, onRowClick }: DataGrid
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete} className="bg-red-600 hover:bg-red-700">
               删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Import Preview Dialog */}
+      <AlertDialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
+        <AlertDialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+          <AlertDialogHeader>
+            <AlertDialogTitle>导入数据预览</AlertDialogTitle>
+            <AlertDialogDescription>
+              将导入 {importPreviewData.length} 条数据。请确认数据正确后点击&ldquo;确认导入&rdquo;。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          
+          <div className="my-4">
+            <div className="rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    {columns.map((col) => (
+                      <TableHead key={col.key}>{col.label}</TableHead>
+                    ))}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {importPreviewData.slice(0, 10).map((row, index) => (
+                    <TableRow key={index}>
+                      {columns.map((col) => (
+                        <TableCell key={col.key}>
+                          {row[col.label] || '-'}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            {importPreviewData.length > 10 && (
+              <p className="text-sm text-muted-foreground mt-2">
+                仅显示前 10 条数据,共 {importPreviewData.length} 条
+              </p>
+            )}
+          </div>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={importing}>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmImport} disabled={importing}>
+              {importing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  导入中...
+                </>
+              ) : (
+                '确认导入'
+              )}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
